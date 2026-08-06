@@ -20,8 +20,9 @@ another.
 cp .env.example .env && cp config/config.example.yaml config/config.yaml
 ```
 
-Edit `.env` with your Proton WireGuard private key, and `config/config.yaml`
-with your `hls_source` and usernames. Then:
+Set `GLUETUN_CONTAINER` in `.env` to the name of your running gluetun container,
+and put your `hls_source` and usernames in `config/config.yaml`. With gluetun
+already up:
 
 ```bash
 docker compose up -d --build
@@ -95,34 +96,55 @@ Otherwise the stream is recorded.
 On `docker compose stop`, the recorder sends `q` to each ffmpeg so files are
 finalised properly before the container exits.
 
-## ProtonVPN
+## ProtonVPN (external gluetun)
 
-The recorder container has **no network stack of its own** — `network_mode:
-service:gluetun` puts it inside the VPN container's namespace. If the tunnel
-drops, gluetun's firewall blocks everything, so the recorder cannot leak
-traffic to your real IP.
+gluetun is **managed outside this project**. The recorder joins its network
+namespace via `network_mode: "container:${GLUETUN_CONTAINER}"`, so the recorder
+has no network stack of its own and cannot leak traffic to your real IP. If the
+tunnel drops, gluetun's killswitch blocks everything.
 
-### WireGuard (default, recommended)
+Point `.env` at your VPN container:
 
-1. Go to <https://account.protonvpn.com> → **Downloads** → **WireGuard configuration**.
-2. Create a config for any server, download it, and copy the `PrivateKey` value.
-3. Put it in `.env` as `WIREGUARD_PRIVATE_KEY`.
-4. Set `SERVER_COUNTRIES` to where you want to exit.
+```bash
+docker ps --filter name=gluetun --format '{{.Names}}  {{.Status}}'
+```
 
-### OpenVPN
+```ini
+GLUETUN_CONTAINER=gluetun
+```
 
-Set `VPN_TYPE=openvpn` in `.env` and fill `OPENVPN_USER` / `OPENVPN_PASSWORD`
-with the credentials from **Account → OpenVPN/IKEv2 username** — these are not
-your Proton login. Append `+pmp` to the username if you need port forwarding.
+Start gluetun first — Compose cannot start or order a container it does not
+own. If gluetun is down, `docker compose up` fails with *cannot join network of
+a non-running container*.
+
+### The one rule to remember
+
+**Recreating gluetun orphans the recorder.** A `container:` network reference is
+bound to the namespace of the container that existed when the recorder was
+created, so a plain `restart` will not reattach. After any `docker compose
+up/down`, image pull, or config change on the VPN stack:
+
+```bash
+docker compose up -d --force-recreate recorder
+```
+
+### Startup ordering
+
+There is deliberately no `depends_on` — Compose cannot gate on the health of a
+service in another project. This is safe: gluetun's killswitch is what prevents
+leaks, not the dependency. If the recorder starts before the tunnel is up, the
+first polls fail, back off exponentially, and recover on their own. You'll see a
+few `poll failed` warnings at boot and nothing worse.
 
 ### Verify the tunnel
 
 ```bash
-docker compose exec gluetun wget -qO- https://ipinfo.io/json
+docker exec libris-recorder python -c "import httpx;print(httpx.get('https://ipinfo.io/json').text)"
 ```
 
-Because the recorder shares that namespace, this is also the recorder's IP.
-On a free Proton plan add `FREE_ONLY: "yes"` to the gluetun environment.
+Run from inside the recorder itself, this proves what the recorder actually
+sees — the shared namespace means it is also gluetun's IP. Confirm it is not
+your home IP before leaving it running.
 
 ## Running without Docker
 

@@ -1,43 +1,15 @@
+# gluetun runs as an external container, managed outside this project.
+# It must already be running before `docker compose up` — Compose cannot start
+# or order a container it does not own.
+#
+#   docker ps --filter name=gluetun --format '{{.Names}}  {{.Status}}'
+#
+# IMPORTANT: whenever you recreate gluetun, recreate the recorder too:
+#   docker compose up -d --force-recreate recorder
+# A `container:` network reference is bound to the namespace of the container
+# that existed at create time; a plain restart will not reattach it.
+
 services:
-  # ProtonVPN tunnel. Everything in the recorder container leaves through this,
-  # and gluetun's firewall kills all traffic if the tunnel drops.
-  gluetun:
-    image: qmcgaw/gluetun:latest
-    container_name: libris-gluetun
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    volumes:
-      - ./gluetun:/gluetun
-    environment:
-      VPN_SERVICE_PROVIDER: protonvpn
-      VPN_TYPE: ${VPN_TYPE:-wireguard}
-
-      # --- WireGuard (default) ---
-      # Get this from account.protonvpn.com -> Downloads -> WireGuard
-      # configuration. Generate a config, then copy the PrivateKey line.
-      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY:-}
-      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:-10.2.0.2/32}
-
-      # --- OpenVPN (set VPN_TYPE=openvpn to use these instead) ---
-      # Credentials from account.protonvpn.com -> Account -> OpenVPN/IKEv2.
-      # These are NOT your Proton login. Append "+pmp" to the username if you
-      # want port forwarding.
-      OPENVPN_USER: ${OPENVPN_USER:-}
-      OPENVPN_PASSWORD: ${OPENVPN_PASSWORD:-}
-
-      # Server selection — see https://github.com/qdm12/gluetun-wiki
-      SERVER_COUNTRIES: ${SERVER_COUNTRIES:-Netherlands}
-      # FREE_ONLY: "yes"           # uncomment on a free Proton plan
-
-      # Keep LAN reachable from inside the tunnel (adjust to your subnet).
-      FIREWALL_OUTBOUND_SUBNETS: ${FIREWALL_OUTBOUND_SUBNETS:-192.168.0.0/16,10.0.0.0/8,172.16.0.0/12}
-
-      HEALTH_VPN_DURATION_INITIAL: 30s
-      TZ: ${TZ:-UTC}
-    restart: unless-stopped
-
   recorder:
     build:
       context: .
@@ -46,11 +18,14 @@ services:
         GID: ${GID:-1000}
     image: librisrecorder:latest
     container_name: libris-recorder
-    # Share gluetun's network namespace: no traffic can bypass the VPN.
-    network_mode: "service:gluetun"
-    depends_on:
-      gluetun:
-        condition: service_healthy
+    # Join the external gluetun container's network namespace: the recorder has
+    # no network stack of its own, so nothing can bypass the VPN. Set
+    # GLUETUN_CONTAINER in .env to whatever your VPN container is named.
+    network_mode: "container:${GLUETUN_CONTAINER:-gluetun}"
+    # No depends_on: gluetun lives outside this project, so Compose cannot gate
+    # on its health. This is safe — gluetun's killswitch blocks all traffic
+    # until the tunnel is up, so an early start just means the first few polls
+    # fail and back off. It cannot leak.
     volumes:
       - ./config:/config:ro
       - ${RECORDINGS_DIR:-./recordings}:/recordings
