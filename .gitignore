@@ -1,0 +1,8 @@
+.env
+config/config.yaml
+recordings/
+gluetun/
+__pycache__/
+*.pyc
+.venv/
+venv/

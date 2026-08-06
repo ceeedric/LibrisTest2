@@ -1,0 +1,84 @@
+# LibrisRecorder configuration.
+#
+# Any value may reference environment variables as ${VAR} or ${VAR:-default}.
+# Copy to config/config.yaml and edit. Only `hls_source` and `usernames` are
+# required — everything else has a working default.
+
+# Base URL of the status API. The recorder requests <hls_source>/<username>.
+hls_source: "https://streams.example.com"
+
+usernames:
+  - user1
+  - user2
+
+api:
+  # Appended to hls_source. Must contain {username}.
+  path_template: "/{username}"
+
+  headers:
+    Accept: "application/json"
+    # Authorization: "Bearer ${API_TOKEN}"
+
+  # Extra query string, e.g. { key: "${API_KEY}" }
+  query: {}
+
+  # Dotted path to the playlist URL in the JSON response.
+  # Supports list indices: "data.streams[0].hls_url"
+  # Leave null to rely purely on autodetect_m3u8.
+  stream_url_field: null
+
+  # If the field above is missing, scan the whole payload for the first
+  # .m3u8 URL. Handy when you do not know the response schema yet.
+  autodetect_m3u8: true
+
+  # These status codes mean "offline", not "error" — no backoff, no log noise.
+  offline_status_codes: [404, 204, 410]
+
+  # Optional extra gate before recording, e.g. field: "isLive", equals: true
+  online_check:
+    field: null
+    equals: null
+
+  verify_tls: true
+
+poll:
+  interval_seconds: 300      # how often to ping each username
+  jitter_seconds: 30         # +/- randomisation so all users don't fire at once
+  timeout_seconds: 15
+  retry_backoff_seconds: 60  # after a transport error, doubling each failure
+  max_backoff_seconds: 900
+  stagger_start: true
+
+recording:
+  output_dir: "/recordings"
+
+  # Placeholders: {username} {date} {time} {timestamp} {epoch} {ext}
+  path_template: "{username}/{username}_{date}_{time}.{ext}"
+
+  # mkv and ts survive an unclean kill; mp4 is written in fragmented mode so it
+  # stays playable, but mkv is the safest default for live capture.
+  container: "mkv"
+
+  video_map: "0:v:0"
+  audio_map: "0:a:0?"   # trailing ? makes audio optional; null to skip audio
+  copy_codecs: true     # -c copy, no re-encode
+
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+  input_headers: {}     # e.g. { Referer: "https://streams.example.com/" }
+
+  extra_input_args: []  # e.g. ["-live_start_index", "-1"]
+  extra_output_args: [] # e.g. ["-bsf:a", "aac_adtstoasc"]
+
+  max_duration_seconds: 0   # 0 = record until the stream ends
+  min_file_bytes: 262144    # delete anything smaller (false starts)
+  cooldown_seconds: 15      # wait after a recording before polling again
+  max_concurrent: 0         # 0 = unlimited simultaneous recordings
+  min_free_disk_gb: 2       # skip a recording if the disk is fuller than this
+  stall_timeout_seconds: 180  # restart if the file stops growing; 0 disables
+
+  graceful_stop_seconds: 20
+  ffmpeg_loglevel: "warning"
+  ffmpeg_path: "ffmpeg"
+
+logging:
+  level: "INFO"   # DEBUG for per-poll detail and full ffmpeg output

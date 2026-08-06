@@ -1,0 +1,62 @@
+services:
+  # ProtonVPN tunnel. Everything in the recorder container leaves through this,
+  # and gluetun's firewall kills all traffic if the tunnel drops.
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: libris-gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./gluetun:/gluetun
+    environment:
+      VPN_SERVICE_PROVIDER: protonvpn
+      VPN_TYPE: ${VPN_TYPE:-wireguard}
+
+      # --- WireGuard (default) ---
+      # Get this from account.protonvpn.com -> Downloads -> WireGuard
+      # configuration. Generate a config, then copy the PrivateKey line.
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY:-}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:-10.2.0.2/32}
+
+      # --- OpenVPN (set VPN_TYPE=openvpn to use these instead) ---
+      # Credentials from account.protonvpn.com -> Account -> OpenVPN/IKEv2.
+      # These are NOT your Proton login. Append "+pmp" to the username if you
+      # want port forwarding.
+      OPENVPN_USER: ${OPENVPN_USER:-}
+      OPENVPN_PASSWORD: ${OPENVPN_PASSWORD:-}
+
+      # Server selection — see https://github.com/qdm12/gluetun-wiki
+      SERVER_COUNTRIES: ${SERVER_COUNTRIES:-Netherlands}
+      # FREE_ONLY: "yes"           # uncomment on a free Proton plan
+
+      # Keep LAN reachable from inside the tunnel (adjust to your subnet).
+      FIREWALL_OUTBOUND_SUBNETS: ${FIREWALL_OUTBOUND_SUBNETS:-192.168.0.0/16,10.0.0.0/8,172.16.0.0/12}
+
+      HEALTH_VPN_DURATION_INITIAL: 30s
+      TZ: ${TZ:-UTC}
+    restart: unless-stopped
+
+  recorder:
+    build:
+      context: .
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    image: librisrecorder:latest
+    container_name: libris-recorder
+    # Share gluetun's network namespace: no traffic can bypass the VPN.
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    volumes:
+      - ./config:/config:ro
+      - ${RECORDINGS_DIR:-./recordings}:/recordings
+    environment:
+      LIBRIS_CONFIG: /config/config.yaml
+      TZ: ${TZ:-UTC}
+      # Referenced by config.yaml via ${API_TOKEN} if you enable that header.
+      API_TOKEN: ${API_TOKEN:-}
+    restart: unless-stopped
