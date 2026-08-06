@@ -12,10 +12,23 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import RecordingConfig
+from .cookies import CookieStore
 
 log = logging.getLogger(__name__)
 
 _UNSAFE_PATH_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+# Anything whose value is a credential and must never reach the log.
+_SECRET_ARGS = {"-cookies", "-headers"}
+
+
+def redact(command: list[str]) -> list[str]:
+    """Mask credential values so DEBUG argv logging stays safe to paste."""
+    safe = list(command)
+    for index, arg in enumerate(safe[:-1]):
+        if arg in _SECRET_ARGS:
+            safe[index + 1] = "<redacted>"
+    return safe
 
 
 class DiskSpaceError(RuntimeError):
@@ -49,7 +62,12 @@ def build_output_path(config: RecordingConfig, username: str, when: datetime) ->
     return Path(config.output_dir) / relative
 
 
-def build_command(config: RecordingConfig, url: str, output: Path) -> list[str]:
+def build_command(
+    config: RecordingConfig,
+    url: str,
+    output: Path,
+    cookies: str | None = None,
+) -> list[str]:
     """Assemble the ffmpeg argv for a single recording."""
     command = [
         config.ffmpeg_path,
@@ -61,9 +79,17 @@ def build_command(config: RecordingConfig, url: str, output: Path) -> list[str]:
 
     if config.user_agent:
         command += ["-user_agent", config.user_agent]
-    if config.input_headers:
-        headers = "".join(f"{key}: {value}\r\n" for key, value in config.input_headers.items())
-        command += ["-headers", headers]
+
+    # ffmpeg accepts a single -headers blob, so cookies are merged in here
+    # rather than passed via -cookies (which does its own domain matching and
+    # was observed to drop cookies silently). An explicit Cookie header in
+    # input_headers wins over the cookies file.
+    headers = dict(config.input_headers)
+    if cookies and not any(key.lower() == "cookie" for key in headers):
+        headers["Cookie"] = cookies
+    if headers:
+        blob = "".join(f"{key}: {value}\r\n" for key, value in headers.items())
+        command += ["-headers", blob]
 
     # Survive brief network hiccups mid-stream rather than ending the recording.
     command += [
@@ -114,9 +140,15 @@ def check_disk_space(config: RecordingConfig) -> None:
 class FfmpegRecorder:
     """Runs one ffmpeg invocation and watches it until the stream ends."""
 
-    def __init__(self, config: RecordingConfig, username: str) -> None:
+    def __init__(
+        self,
+        config: RecordingConfig,
+        username: str,
+        cookies: CookieStore | None = None,
+    ) -> None:
         self._config = config
         self._username = username
+        self._cookies = cookies
         self._process: asyncio.subprocess.Process | None = None
 
     async def run(self, url: str) -> RecordingResult:
@@ -127,9 +159,10 @@ class FfmpegRecorder:
         output = build_output_path(config, self._username, started)
         output.parent.mkdir(parents=True, exist_ok=True)
 
-        command = build_command(config, url, output)
+        cookie_value = self._cookies.cookie_header(url) if self._cookies else None
+        command = build_command(config, url, output, cookies=cookie_value)
         log.info("[%s] recording to %s", self._username, output)
-        log.debug("[%s] ffmpeg argv: %s", self._username, " ".join(command))
+        log.debug("[%s] ffmpeg argv: %s", self._username, " ".join(redact(command)))
 
         self._process = await asyncio.create_subprocess_exec(
             *command,

@@ -17,6 +17,7 @@ import httpx
 from . import __version__
 from .api import StreamApi, build_client
 from .config import Config, ConfigError, load_config
+from .cookies import CookieStore
 from .worker import UserWorker
 
 log = logging.getLogger("librisrecorder")
@@ -64,8 +65,23 @@ async def probe(config: Config, target: str) -> int:
     """One-shot diagnostic poll — useful for pinning down stream_url_field."""
     usernames = config.usernames if target == "*" else [target]
     exit_code = 0
+
+    cookies = CookieStore(
+        config.cookies.file,
+        send_to_api=config.cookies.send_to_api,
+        send_to_ffmpeg=config.cookies.send_to_ffmpeg,
+    )
+    if cookies.enabled:
+        loaded = cookies.load()
+        live = [c for c in loaded if not c.expired]
+        print(f"cookies: {len(loaded)} loaded from {cookies.path}, {len(live)} unexpired")
+        if loaded and not live:
+            print("  WARNING: every cookie has expired — export a fresh cookies.txt")
+    else:
+        print("cookies: not configured")
+
     async with build_client(config.api, config.poll.timeout_seconds) as client:
-        api = StreamApi(config.api, client)
+        api = StreamApi(config.api, client, cookies=cookies)
         for username in usernames:
             url = config.api.url_for(username)
             print(f"\n=== {username} ===")
@@ -75,6 +91,7 @@ async def probe(config: Config, target: str) -> int:
                     url,
                     headers=config.api.headers or None,
                     params=config.api.query or None,
+                    cookies=cookies.jar(),
                 )
                 print(f"HTTP {response.status_code}")
                 body = response.text.strip()
@@ -110,10 +127,17 @@ async def run(config: Config) -> int:
         else None
     )
 
+    cookies = CookieStore(
+        config.cookies.file,
+        send_to_api=config.cookies.send_to_api,
+        send_to_ffmpeg=config.cookies.send_to_ffmpeg,
+    )
+    cookies.load()
+
     async with build_client(config.api, config.poll.timeout_seconds) as client:
-        api = StreamApi(config.api, client)
+        api = StreamApi(config.api, client, cookies=cookies)
         workers = [
-            UserWorker(username, config, api, slots, shutdown)
+            UserWorker(username, config, api, slots, shutdown, cookies=cookies)
             for username in config.usernames
         ]
 

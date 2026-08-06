@@ -10,6 +10,7 @@ import httpx
 
 from .api import StreamApi
 from .config import Config
+from .cookies import CookieStore
 from .recorder import DiskSpaceError, FfmpegRecorder
 
 log = logging.getLogger(__name__)
@@ -25,12 +26,14 @@ class UserWorker:
         api: StreamApi,
         slots: asyncio.Semaphore | None,
         shutdown: asyncio.Event,
+        cookies: CookieStore | None = None,
     ) -> None:
         self.username = username
         self._config = config
         self._api = api
         self._slots = slots
         self._shutdown = shutdown
+        self._cookies = cookies
         self._recorder: FfmpegRecorder | None = None
         self._backoff = config.poll.retry_backoff_seconds
 
@@ -76,7 +79,9 @@ class UserWorker:
                 log.info("[%s] all recording slots busy, waiting", self.username)
             await self._slots.acquire()
         try:
-            self._recorder = FfmpegRecorder(self._config.recording, self.username)
+            self._recorder = FfmpegRecorder(
+                self._config.recording, self.username, cookies=self._cookies
+            )
             await self._recorder.run(url)
         except DiskSpaceError as exc:
             log.error("[%s] skipping recording: %s", self.username, exc)

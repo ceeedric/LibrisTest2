@@ -103,11 +103,19 @@ class RecordingConfig:
 
 
 @dataclass
+class CookiesConfig:
+    file: str | None = None
+    send_to_api: bool = True
+    send_to_ffmpeg: bool = True
+
+
+@dataclass
 class Config:
     usernames: list[str]
     api: ApiConfig
     poll: PollConfig
     recording: RecordingConfig
+    cookies: CookiesConfig = field(default_factory=CookiesConfig)
     log_level: str = "INFO"
 
 
@@ -124,13 +132,63 @@ def _known_keys(section: dict[str, Any], allowed: set[str], name: str) -> None:
         raise ConfigError(f"unknown key(s) in '{name}': {', '.join(sorted(unknown))}")
 
 
+def _identity() -> str:
+    """Describe the running user, so ownership problems are self-evident."""
+    try:
+        return f"uid={os.getuid()} gid={os.getgid()}"
+    except AttributeError:  # Windows
+        return "uid=n/a"
+
+
+def _describe_parent(parent: Path) -> str:
+    """Explain what the config's directory actually looks like from in here."""
+    if not parent.exists():
+        return (
+            f"its directory {parent} does not exist — the volume is probably not "
+            f"mounted (expected something like './config:{parent}:ro')"
+        )
+    if not parent.is_dir():
+        return f"{parent} exists but is not a directory"
+    try:
+        entries = sorted(p.name for p in parent.iterdir())
+    except PermissionError:
+        return (
+            f"{parent} exists but this process ({_identity()}) may not read it — "
+            f"check ownership/permissions on the host directory, and SELinux "
+            f"labelling (try the ':z' mount flag) if applicable"
+        )
+    listing = ", ".join(entries) if entries else "<empty>"
+    return f"{parent} contains: {listing}"
+
+
 def load_config(path: str | Path) -> Config:
     """Read a YAML config file and return a validated :class:`Config`."""
     path = Path(path)
-    if not path.is_file():
-        raise ConfigError(f"config file not found: {path}")
 
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        exists = path.exists()
+    except PermissionError:
+        exists = False
+
+    if not exists:
+        raise ConfigError(f"config file not found: {path} ({_describe_parent(path.parent)})")
+    if not path.is_file():
+        raise ConfigError(f"{path} is not a regular file")
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except PermissionError as exc:
+        raise ConfigError(
+            f"{path} exists but cannot be read by this process ({_identity()}): {exc}"
+        ) from exc
+    except OSError as exc:
+        raise ConfigError(f"could not read {path}: {exc}") from exc
+
+    try:
+        raw = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
+
     if not isinstance(raw, dict):
         raise ConfigError("config root must be a mapping")
     raw = _expand_env(raw)
@@ -236,6 +294,27 @@ def load_config(path: str | Path) -> Config:
     if "{username}" not in recording.path_template:
         raise ConfigError("'recording.path_template' must contain the {username} placeholder")
 
+    cookies_raw = _section(raw, "cookies")
+    _known_keys(cookies_raw, {"file", "send_to_api", "send_to_ffmpeg"}, "cookies")
+    cookies = CookiesConfig(
+        file=cookies_raw.get("file") or None,
+        send_to_api=bool(cookies_raw.get("send_to_api", True)),
+        send_to_ffmpeg=bool(cookies_raw.get("send_to_ffmpeg", True)),
+    )
+    if cookies.file:
+        cookie_path = Path(cookies.file)
+        if not cookie_path.is_file():
+            # Failing here beats silently polling without credentials and
+            # spending an hour wondering why everything returns 403.
+            raise ConfigError(
+                f"cookies.file is set to {cookie_path} but no readable file is there "
+                f"({_describe_parent(cookie_path.parent)})"
+            )
+        if not (cookies.send_to_api or cookies.send_to_ffmpeg):
+            raise ConfigError(
+                "cookies.file is set but both send_to_api and send_to_ffmpeg are false"
+            )
+
     logging_raw = _section(raw, "logging")
     _known_keys(logging_raw, {"level"}, "logging")
 
@@ -244,5 +323,6 @@ def load_config(path: str | Path) -> Config:
         api=api,
         poll=poll,
         recording=recording,
+        cookies=cookies,
         log_level=str(logging_raw.get("level", "INFO")).upper(),
     )

@@ -81,6 +81,48 @@ In order:
 
 Otherwise the stream is recorded.
 
+### Cookies
+
+If the API or the playlist needs a logged-in session, drop a Netscape-format
+`cookies.txt` next to your config — the same file `yt-dlp` and the "Get
+cookies.txt" browser extensions export:
+
+```yaml
+cookies:
+  file: "/config/cookies.txt"
+  send_to_api: true
+  send_to_ffmpeg: true
+```
+
+Since `./config` is already bind-mounted, put the file at
+`config/cookies.txt` on the host and it appears at `/config/cookies.txt` in the
+container. No compose change needed. It is gitignored, like `config.yaml`.
+
+Cookies are applied to **both** the status API polls and every ffmpeg request
+(the playlist *and* each segment). Details worth knowing:
+
+- **Only cookies scoped to the target host are sent.** Credentials for
+  unrelated domains in your export never reach the stream host or the API.
+- **Expired cookies are dropped**, and startup logs how many. If all of them
+  have expired you get a loud warning — that is the usual cause of a setup that
+  worked yesterday and 403s today.
+- **`#HttpOnly_` entries are honoured.** Python's stdlib parser silently skips
+  these; a hand-rolled parser is used so session cookies aren't lost.
+- **The file is re-read when it changes.** Export a fresh one over the old
+  path and the next poll picks it up — no restart.
+- Cookie values are **redacted from DEBUG logs**, so `--log-level DEBUG` output
+  stays safe to paste.
+
+Check what was loaded without recording anything:
+
+```bash
+docker compose run --rm recorder --probe user1
+```
+
+Note that cookies go via ffmpeg's `-headers`, not its `-cookies` option — the
+latter applies its own domain matching and was observed dropping cookies
+silently, which is why host scoping is done in-process instead.
+
 ### Recording behaviour
 
 | Setting | Default | Purpose |
@@ -171,9 +213,9 @@ In-flight recordings are finalised before the restart, so nothing is corrupted.
 **Nothing ever records.** Run `--probe <user>` — usually either the URL shape is
 wrong (`api.path_template`) or the playlist field wasn't found.
 
-**`ffmpeg: 403 Forbidden`.** The playlist needs the same headers the API call
-used. Add them under `recording.input_headers` (commonly `Referer`, sometimes a
-`Cookie`).
+**`ffmpeg: 403 Forbidden`.** Usually a missing or stale session — see
+[Cookies](#cookies). If cookies are already configured, the playlist may also
+need a `Referer`; add it under `recording.input_headers`.
 
 **Recordings cut short.** Raise `stall_timeout_seconds`, or check the gluetun
 logs for tunnel reconnects — a VPN drop kills the HTTP connection.

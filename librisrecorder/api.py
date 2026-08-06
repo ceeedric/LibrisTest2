@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from .config import ApiConfig
+from .cookies import CookieStore
 
 log = logging.getLogger(__name__)
 
@@ -84,9 +85,15 @@ def find_m3u8(payload: Any) -> str | None:
 class StreamApi:
     """Thin wrapper around the per-username status endpoint."""
 
-    def __init__(self, config: ApiConfig, client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        config: ApiConfig,
+        client: httpx.AsyncClient,
+        cookies: CookieStore | None = None,
+    ) -> None:
         self._config = config
         self._client = client
+        self._cookies = cookies
 
     async def check(self, username: str) -> StreamStatus:
         """Poll the API for ``username``.
@@ -99,6 +106,7 @@ class StreamApi:
             url,
             headers=self._config.headers or None,
             params=self._config.query or None,
+            cookies=self._cookies.jar() if self._cookies else None,
         )
 
         if response.status_code in self._config.offline_status_codes:

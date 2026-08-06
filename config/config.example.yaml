@@ -80,5 +80,14 @@ recording:
   ffmpeg_loglevel: "warning"
   ffmpeg_path: "ffmpeg"
 
+# Netscape / curl format cookies.txt — the same file yt-dlp and
+# "Get cookies.txt" browser extensions produce. Applied to BOTH the API polls
+# and the ffmpeg fetch. Re-read automatically when the file changes, so you can
+# drop in a fresh export without restarting the container.
+cookies:
+  file: null              # e.g. "/config/cookies.txt"
+  send_to_api: true
+  send_to_ffmpeg: true    # only cookies scoped to the playlist host are sent
+
 logging:
   level: "INFO"   # DEBUG for per-poll detail and full ffmpeg output

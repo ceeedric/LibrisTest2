@@ -1,5 +1,7 @@
 .env
 config/config.yaml
+config/cookies.txt
+cookies.txt
 recordings/
 gluetun/
 __pycache__/
